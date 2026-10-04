@@ -1,0 +1,2 @@
+DROP INDEX IF EXISTS idx_user_login;
+DROP TABLE IF EXISTS users; 

@@ -1,3 +1,7 @@
 package main
 
-func main() {}
+import "github.com/apnaumov/gopher-accrual.git/internal/server"
+
+func main() {
+	server.StartGophermartServer()
+}
