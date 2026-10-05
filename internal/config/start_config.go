@@ -9,7 +9,6 @@ import (
 )
 
 type PendingMessageProcessorConfig struct {
-	TickTime                  uint64
 	BufferSize                uint64
 	WorkerPoolSize            uint64
 	MaxParallelInsertsToQueue uint64
@@ -55,7 +54,6 @@ func setConfigFromArgs(config *Config) {
 	flag.StringVar(&config.LogDirectory, "l", defaultLogDirectory, `Log directory. Default puts messages to stdout`)
 
 	flag.StringVar(&secretKey, "k", "", `Secret key string`)
-	flag.Uint64Var(&config.PendingMessageProcessorParams.TickTime, "tick", 10, "Tick time to fetch messages in seconds")
 	flag.Uint64Var(&config.PendingMessageProcessorParams.BufferSize, "bufferSize", 1024, "Buffer size")
 	flag.Uint64Var(&config.PendingMessageProcessorParams.WorkerPoolSize, "workerPoolSize", 20, "Worker pool size")
 	flag.Uint64Var(&config.PendingMessageProcessorParams.MaxParallelInsertsToQueue, "maxParallelInsertsToQueue", 20, "Maximum parallel inserts to message queue")
@@ -83,14 +81,6 @@ func setConfigFromEnv(config *Config) {
 
 	if secretKeyString, found := os.LookupEnv("GOPHERMART_SECRET_KEY"); found {
 		config.SecretKey = []byte(secretKeyString)
-	}
-
-	if tickTimeString, found := os.LookupEnv("GOPHERMART_TICK_TIME"); found {
-		u64, err := strconv.ParseUint(tickTimeString, 10, 64)
-		if err != nil {
-			log.Fatal(err)
-		}
-		config.PendingMessageProcessorParams.TickTime = u64
 	}
 
 	if bufferSizeString, found := os.LookupEnv("GOPHERMART_BUFFER_SIZE"); found {

@@ -33,7 +33,7 @@ func StartGophermartServer() {
 	var storage *repository.DBStorage
 	logger.Info("Try to initialize storage")
 	if len(conf.DBConnectionString) != 0 {
-		st, err := repository.NewDBStorage(conf.DBConnectionString, &conf.PendingMessageProcessorParams, logger.Named("storage"))
+		st, err := repository.NewDBStorage(conf.DBConnectionString, logger.Named("storage"))
 		if err != nil {
 			log.Fatal(err.Error())
 		}
@@ -41,7 +41,7 @@ func StartGophermartServer() {
 		storage = st
 	}
 
-	router, err := handler.NewGophermartRouter(conf.AccrualSystemAddress, conf.SecretKey, storage)
+	router, err := handler.NewGophermartRouter(conf.AccrualSystemAddress, conf.SecretKey, &conf.PendingMessageProcessorParams, storage)
 	if err != nil {
 		logger.Fatal(err.Error())
 	}

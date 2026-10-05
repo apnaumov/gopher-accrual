@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"mime"
 	"net/http"
+	"strings"
 	"time"
 
+	"github.com/apnaumov/gopher-accrual.git/internal/config"
 	"github.com/apnaumov/gopher-accrual.git/internal/logger"
 	"github.com/apnaumov/gopher-accrual.git/internal/model"
 	"github.com/apnaumov/gopher-accrual.git/internal/repository"
@@ -24,7 +27,7 @@ type GophermartRouter struct {
 	requestLogger *zap.Logger
 }
 
-func NewGophermartRouter(accrualAddr string, authKey []byte, DBStorage *repository.DBStorage) (*GophermartRouter, error) {
+func NewGophermartRouter(accrualAddr string, authKey []byte, messageProcessorConfig *config.PendingMessageProcessorConfig, DBStorage *repository.DBStorage) (*GophermartRouter, error) {
 	gophermartRouter := &GophermartRouter{}
 	gophermartRouter.Mux = chi.NewRouter()
 
@@ -36,7 +39,7 @@ func NewGophermartRouter(accrualAddr string, authKey []byte, DBStorage *reposito
 
 	gophermartRouter.requestLogger = requestLogger
 
-	gophermart, err := service.NewGophermartService(accrualAddr, DBStorage)
+	gophermart, err := service.NewGophermartService(accrualAddr, messageProcessorConfig, DBStorage)
 
 	if err != nil {
 		return nil, err
@@ -138,7 +141,52 @@ func (router *GophermartRouter) loginUser(w http.ResponseWriter, r *http.Request
 }
 
 func (router *GophermartRouter) uploadOrder(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
 
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || mediaType != "text/plain" {
+		http.Error(w, "Content-type incorrect", http.StatusBadRequest)
+		return
+	}
+
+	userID, err := getUserIDFromCtx(r.Context())
+	if err != nil {
+		router.requestLogger.Error(err.Error())
+		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+		return
+	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		router.requestLogger.Error(err.Error())
+		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+		return
+	}
+
+	orderNumber := strings.TrimSpace(string(body))
+	if len(orderNumber) == 0 {
+		http.Error(w, "Body must be not empty", http.StatusBadRequest)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	err = router.service.UploadOrder(ctx, userID, model.OrderNumber(orderNumber))
+
+	switch {
+	case err == nil:
+		w.WriteHeader(http.StatusAccepted)
+	case errors.Is(err, service.ErrOrderAlreadyUploaded):
+		w.WriteHeader(http.StatusOK)
+	case errors.Is(err, service.ErrOrderUploadedByAnotherUser):
+		http.Error(w, http.StatusText(http.StatusConflict), http.StatusConflict)
+	case errors.Is(err, service.ErrInvalidOrderNumber):
+		http.Error(w, http.StatusText(http.StatusUnprocessableEntity), http.StatusUnprocessableEntity)
+	default:
+		router.requestLogger.Error(err.Error())
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+	}
 }
 
 func (router *GophermartRouter) listOrders(w http.ResponseWriter, r *http.Request) {

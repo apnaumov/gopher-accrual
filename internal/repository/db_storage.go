@@ -6,7 +6,7 @@ import (
 	"errors"
 
 	gopheraccrual "github.com/apnaumov/gopher-accrual.git"
-	"github.com/apnaumov/gopher-accrual.git/internal/config"
+	"github.com/apnaumov/gopher-accrual.git/internal/model"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"go.uber.org/zap"
 
@@ -15,12 +15,17 @@ import (
 	"github.com/golang-migrate/migrate/v4/source/iofs"
 )
 
+var (
+	ErrNotFound        = errors.New("can't find record")
+	ErrInsertCollision = errors.New("collision while inserting record")
+)
+
 type DBStorage struct {
 	db     *sql.DB
 	logger *zap.Logger
 }
 
-func NewDBStorage(connStr string, messageProcessorConfig *config.PendingMessageProcessorConfig, logger *zap.Logger) (*DBStorage, error) {
+func NewDBStorage(connStr string, logger *zap.Logger) (*DBStorage, error) {
 	err := runMigrations(connStr)
 	if err != nil {
 		return nil, err
@@ -70,6 +75,32 @@ func (storage *DBStorage) GetUserInformation(ctx context.Context, login string) 
 	}
 
 	return userID, passwordHash, nil
+}
+
+// CreateOrder сохраняет заказ, если он ещё не был загружен.
+// Возвращает id владельца заказа и признак того, что заказ был создан этим вызовом.
+func (storage *DBStorage) CreateOrder(ctx context.Context, orderNumber model.OrderNumber, userID uint64) (uint64, bool, error) {
+	row := storage.db.QueryRowContext(ctx, createOrder, orderNumber, userID, model.OrderStatusNew)
+
+	var ownerID uint64
+	var created bool
+
+	err := row.Scan(&ownerID, &created)
+	if err == nil {
+		return ownerID, created, nil
+	}
+
+	if !errors.Is(err, sql.ErrNoRows) {
+		return 0, false, err
+	}
+
+	// Конкурентная вставка того же заказа закоммитилась после снимка запроса — перечитываем владельца
+	err = storage.db.QueryRowContext(ctx, getOrderOwner, orderNumber).Scan(&ownerID)
+	if err != nil {
+		return 0, false, err
+	}
+
+	return ownerID, false, nil
 }
 
 func (storage *DBStorage) OnServerShutdown() error {
