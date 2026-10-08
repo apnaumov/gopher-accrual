@@ -24,7 +24,7 @@ func StartGophermartServer() {
 		log.Fatal(err.Error())
 	}
 
-	logger, err := logger.InitializeRootLogger("server", "info")
+	logger, err := logger.InitializeRootLogger("server", "debug")
 	if err != nil {
 		log.Fatal(err.Error())
 	}

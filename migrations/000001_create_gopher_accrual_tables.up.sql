@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS orders (
 	order_number TEXT NOT NULL UNIQUE,
 	user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
 	status SMALLINT NOT NULL CHECK (status >= 1 AND status <= 4),
-	accrual INTEGER,
+	accrual NUMERIC(12,2),
 	uploaded_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS withdrawals (
 	internal_id SERIAL NOT NULL PRIMARY KEY,
 	order_number TEXT NOT NULL REFERENCES orders(order_number) ON DELETE CASCADE,
 	user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-	sum INTEGER NOT NULL,
+	sum NUMERIC(12,2) NOT NULL,
 	processed_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 

@@ -24,3 +24,22 @@ const (
 	OrderStatusInvalid
 	OrderStatusProcessed
 )
+
+var AccrualOrdersNameToStatus = map[string]OrderStatus{
+	"INVALID":    OrderStatusInvalid,
+	"PROCESSING": OrderStatusProcessing,
+	"PROCESSED":  OrderStatusProcessed,
+}
+
+var OrdersStatusToName = map[OrderStatus]string{
+	OrderStatusNew:        "NEW",
+	OrderStatusInvalid:    "INVALID",
+	OrderStatusProcessing: "PROCESSING",
+	OrderStatusProcessed:  "PROCESSED",
+}
+
+type AccrualResponse struct {
+	Order   string  `json:"order"`
+	Status  string  `json:"status"`
+	Accrual float64 `json:"accrual"`
+}

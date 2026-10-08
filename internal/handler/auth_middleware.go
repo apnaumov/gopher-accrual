@@ -40,12 +40,8 @@ func (router *GophermartRouter) authMiddleware(h http.Handler) http.Handler {
 			claims, err := router.jwtClient.ParseToken(token.Value)
 
 			if err != nil {
-				if errors.Is(err, errTokenNotValid) {
-					http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
-				} else {
-					http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-				}
-
+				authLogger.Error(err.Error())
+				http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
 				return
 			}
 

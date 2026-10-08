@@ -16,8 +16,9 @@ import (
 )
 
 var (
-	ErrNotFound        = errors.New("can't find record")
-	ErrInsertCollision = errors.New("collision while inserting record")
+	ErrNotFound             = errors.New("can't find record")
+	ErrInsertCollision      = errors.New("collision while inserting record")
+	ErrStatusConvertInvalid = errors.New("can't convert order status name to status number")
 )
 
 type DBStorage struct {
@@ -86,21 +87,31 @@ func (storage *DBStorage) CreateOrder(ctx context.Context, orderNumber model.Ord
 	var created bool
 
 	err := row.Scan(&ownerID, &created)
-	if err == nil {
-		return ownerID, created, nil
-	}
-
-	if !errors.Is(err, sql.ErrNoRows) {
-		return 0, false, err
-	}
-
-	// Конкурентная вставка того же заказа закоммитилась после снимка запроса — перечитываем владельца
-	err = storage.db.QueryRowContext(ctx, getOrderOwner, orderNumber).Scan(&ownerID)
 	if err != nil {
 		return 0, false, err
 	}
 
-	return ownerID, false, nil
+	return ownerID, created, nil
+}
+
+func (storage *DBStorage) UpdateOrder(ctx context.Context, accrualOrder model.AccrualResponse) (int64, error) {
+	orderStatus, ok := model.AccrualOrdersNameToStatus[accrualOrder.Status]
+	if !ok {
+		return 0, ErrStatusConvertInvalid
+	}
+
+	res, err := storage.db.ExecContext(ctx, updateOrder, orderStatus, accrualOrder.Accrual, accrualOrder.Order)
+
+	if err != nil {
+		return 0, err
+	}
+
+	rowsAffected, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+
+	return rowsAffected, nil
 }
 
 func (storage *DBStorage) OnServerShutdown() error {

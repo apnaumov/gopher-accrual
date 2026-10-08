@@ -31,7 +31,7 @@ func NewGophermartRouter(accrualAddr string, authKey []byte, messageProcessorCon
 	gophermartRouter := &GophermartRouter{}
 	gophermartRouter.Mux = chi.NewRouter()
 
-	requestLogger, err := logger.InitializeRootLogger("server_requests", "info")
+	requestLogger, err := logger.InitializeRootLogger("server_requests", "debug")
 
 	if err != nil {
 		return nil, err

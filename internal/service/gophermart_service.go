@@ -3,10 +3,14 @@ package service
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/textproto"
+	"strconv"
 	"time"
 
 	"fmt"
-	"math/rand"
+
+	"github.com/go-resty/resty/v2"
 
 	"github.com/apnaumov/gopher-accrual.git/internal/config"
 	"github.com/apnaumov/gopher-accrual.git/internal/logger"
@@ -30,7 +34,7 @@ type GophermartService struct {
 }
 
 func NewGophermartService(accrualAddr string, messageProcessorConfig *config.PendingMessageProcessorConfig, dbStorage *repository.DBStorage) (*GophermartService, error) {
-	logger, err := logger.InitializeRootLogger("gophermart_service", "info")
+	logger, err := logger.InitializeRootLogger("gophermart_service", "debug")
 
 	if err != nil {
 		return nil, err
@@ -52,24 +56,75 @@ func NewGophermartService(accrualAddr string, messageProcessorConfig *config.Pen
 }
 
 func (gophermartService *GophermartService) processAccrualOrders(ctx context.Context, message model.OrderNumber) error {
-	gophermartService.logger.Info("process gen")
+	reqCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 
-	i := rand.Intn(10)
-	for {
-		if i > 3 {
-			gophermartService.logger.Info("Loop stacked")
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(5 * time.Second):
-			}
-			continue
-		}
-		gophermartService.logger.Info("Loop exited")
-		break
+	classifier := repository.NewPostgresErrorClassifier()
+
+	var result model.AccrualResponse
+
+	resp, err := resty.New().R().SetContext(reqCtx).SetResult(&result).Get(gophermartService.accrualAddr + "/api/orders/" + string(message))
+	if err != nil {
+		gophermartService.logger.Error("Error while GET request to accrual service", zap.Error(err), zap.String("Accrual addr", gophermartService.accrualAddr))
+		return ErrNeedToRetry
 	}
 
-	return ErrNeedToRetry
+	switch resp.StatusCode() {
+
+	case http.StatusNoContent:
+		gophermartService.logger.Warn("Order doesn't registered in accrual system", zap.String("Order number", string(message)))
+		rowsAffected, err := gophermartService.dbStorage.UpdateOrder(reqCtx, model.AccrualResponse{Order: string(message), Status: "INVALID"})
+
+		if err != nil {
+			classification := classifier.Classify(err)
+			if classification == repository.NonRetriable {
+				return err
+			} else {
+				gophermartService.logger.Error(err.Error())
+				return ErrNeedToRetry
+			}
+		}
+
+		gophermartService.logger.Debug("Rows affected while status no content", zap.Int64("Rows affected", rowsAffected))
+
+	case http.StatusInternalServerError:
+		gophermartService.logger.Warn("Accrual internal server error, retry request later")
+		return ErrNeedToRetry
+
+	case http.StatusOK:
+		if result.Status == "REGISTERED" {
+			gophermartService.logger.Debug("Order registered", zap.String("Order number", string(message)))
+			return ErrNeedToRetry
+		}
+		rowsAffected, err := gophermartService.dbStorage.UpdateOrder(reqCtx, result)
+		if err != nil {
+			classification := classifier.Classify(err)
+			if classification == repository.NonRetriable {
+				return err
+			} else {
+				gophermartService.logger.Error(err.Error())
+				return ErrNeedToRetry
+			}
+		}
+		gophermartService.logger.Debug("Rows affected while status OK", zap.Int64("Rows affected", rowsAffected))
+
+		if result.Status == "PROCESSING" {
+			gophermartService.logger.Debug("Order processed", zap.String("Order number", string(message)))
+			return ErrNeedToRetry
+		}
+
+	// усыпляем целую горутину, так как все равно сервис не работает, нет смысла гонять следующие сообщения
+	case http.StatusTooManyRequests:
+		secondsToSleep, err := strconv.Atoi(resp.Header().Get(textproto.CanonicalMIMEHeaderKey("Retry-After")))
+		if err != nil {
+			return err
+		}
+
+		time.Sleep(time.Duration(secondsToSleep) * time.Second)
+		return ErrNeedToRetry
+	}
+
+	return nil
 }
 
 func (gophermartService *GophermartService) OnServerShutdown() error {
@@ -111,18 +166,24 @@ func (gophermartService *GophermartService) UploadOrder(ctx context.Context, use
 		return fmt.Errorf("error while trying create order: %w", err)
 	}
 
+	insertToPendingMsgProcessor := func() {
+		// Заказ уже сохранён со статусом NEW, поэтому ошибка постановки в очередь не считается ошибкой запроса
+		if err := gophermartService.pendingGetOrderProcessor.InsertToQueue(orderNumber); err != nil {
+			gophermartService.logger.Warn("cannot put order to processing queue",
+				zap.String("order", string(orderNumber)), zap.Error(err))
+		}
+	}
+
 	if !created {
 		if ownerID == userID {
+			// Синхронизируем данные пользовательского заказа
+			insertToPendingMsgProcessor()
 			return ErrOrderAlreadyUploaded
 		}
 		return ErrOrderUploadedByAnotherUser
 	}
 
-	// Заказ уже сохранён со статусом NEW, поэтому ошибка постановки в очередь не считается ошибкой запроса
-	if err := gophermartService.pendingGetOrderProcessor.InsertToQueue(orderNumber); err != nil {
-		gophermartService.logger.Warn("cannot put order to processing queue",
-			zap.String("order", string(orderNumber)), zap.Error(err))
-	}
+	insertToPendingMsgProcessor()
 
 	return nil
 }
