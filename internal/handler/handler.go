@@ -190,19 +190,134 @@ func (router *GophermartRouter) uploadOrder(w http.ResponseWriter, r *http.Reque
 }
 
 func (router *GophermartRouter) listOrders(w http.ResponseWriter, r *http.Request) {
+	userID, err := getUserIDFromCtx(r.Context())
+	if err != nil {
+		router.requestLogger.Error(err.Error())
+		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+		return
+	}
 
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	orders, err := router.service.ListOrders(ctx, userID)
+	if err != nil {
+		router.requestLogger.Error(err.Error())
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+
+	if len(orders) == 0 {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	if router.writeJSON(w, orders) {
+		w.WriteHeader(http.StatusOK)
+	} else {
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+	}
 }
 
 func (router *GophermartRouter) getBalance(w http.ResponseWriter, r *http.Request) {
+	userID, err := getUserIDFromCtx(r.Context())
+	if err != nil {
+		router.requestLogger.Error(err.Error())
+		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+		return
+	}
 
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	balanceResponce, err := router.service.GetBalance(ctx, userID)
+
+	if err != nil {
+		router.requestLogger.Error(err.Error())
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+
+	if router.writeJSON(w, balanceResponce) {
+		w.WriteHeader(http.StatusOK)
+	} else {
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+	}
 }
 
 func (router *GophermartRouter) withdraw(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
 
+	userID, err := getUserIDFromCtx(r.Context())
+	if err != nil {
+		router.requestLogger.Error(err.Error())
+		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+		return
+	}
+
+	var request model.WithdrawRequest
+
+	if !router.checkJSONRequest(w, r, &request) {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	err = router.service.Withdraw(ctx, userID, request)
+
+	switch {
+	case err == nil:
+		w.WriteHeader(http.StatusOK)
+	case errors.Is(err, repository.ErrInsufficientFunds):
+		http.Error(w, http.StatusText(http.StatusPaymentRequired), http.StatusPaymentRequired)
+	case errors.Is(err, service.ErrInvalidOrderNumber):
+		http.Error(w, http.StatusText(http.StatusUnprocessableEntity), http.StatusUnprocessableEntity)
+	default:
+		router.requestLogger.Error(err.Error())
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+	}
 }
 
 func (router *GophermartRouter) listWithdrawals(w http.ResponseWriter, r *http.Request) {
+	userID, err := getUserIDFromCtx(r.Context())
+	if err != nil {
+		router.requestLogger.Error(err.Error())
+		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+		return
+	}
 
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	withdrawals, err := router.service.ListWithdrawals(ctx, userID)
+	if err != nil {
+		router.requestLogger.Error(err.Error())
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+
+	if len(withdrawals) == 0 {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	if router.writeJSON(w, withdrawals) {
+		w.WriteHeader(http.StatusOK)
+	} else {
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+	}
+}
+
+func (router *GophermartRouter) writeJSON(w http.ResponseWriter, v any) bool {
+	w.Header().Set("Content-Type", "application/json")
+
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		router.requestLogger.Error(err.Error())
+		return false
+	}
+
+	return true
 }
 
 func (router *GophermartRouter) checkJSONRequest(w http.ResponseWriter, r *http.Request, v any) bool {

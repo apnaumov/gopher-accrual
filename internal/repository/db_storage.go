@@ -18,7 +18,8 @@ import (
 var (
 	ErrNotFound             = errors.New("can't find record")
 	ErrInsertCollision      = errors.New("collision while inserting record")
-	ErrStatusConvertInvalid = errors.New("can't convert order status name to status number")
+	ErrInsufficientFunds    = errors.New("insufficient funds")
+	ErrStatusConvertInvalid =errors.New("can't convert order status name to status number")
 )
 
 type DBStorage struct {
@@ -112,6 +113,100 @@ func (storage *DBStorage) UpdateOrder(ctx context.Context, accrualOrder model.Ac
 	}
 
 	return rowsAffected, nil
+}
+
+func (storage *DBStorage) GetBalance(ctx context.Context, userID uint64) (float64, float64, error) {
+	res := storage.db.QueryRowContext(ctx, getBalance, userID)
+
+	var balance float64
+	var withdrawn float64
+
+	err := res.Scan(&balance, &withdrawn)
+
+	if err != nil {
+		return 0, 0, err
+	}
+
+	return balance, withdrawn, nil
+}
+
+func (storage *DBStorage) ListOrders(ctx context.Context, userID uint64) ([]model.OrderResponse, error) {
+	rows, err := storage.db.QueryContext(ctx, listOrdersByUser, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var orders []model.OrderResponse
+
+	for rows.Next() {
+		var order model.OrderResponse
+		var status model.OrderStatus
+		var accrual sql.NullFloat64
+
+		if err := rows.Scan(&order.Number, &status, &accrual, &order.UploadedAt); err != nil {
+			return nil, err
+		}
+
+		order.Status = model.OrdersStatusToName[status]
+		// accrual отдаём только для обработанных заказов
+		if accrual.Valid && status == model.OrderStatusProcessed {
+			order.Accrual = &accrual.Float64
+		}
+
+		orders = append(orders, order)
+	}
+
+	return orders, rows.Err()
+}
+
+// Withdraw списывает баллы атомарно: проверка баланса и вставка выполняются под блокировкой строки пользователя
+func (storage *DBStorage) Withdraw(ctx context.Context, userID uint64, orderNumber string, sum float64) error {
+	tx, err := storage.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var lockedID uint64
+	if err := tx.QueryRowContext(ctx, lockUser, userID).Scan(&lockedID); err != nil {
+		return err
+	}
+
+	var balance, withdrawn float64
+	if err := tx.QueryRowContext(ctx, getBalance, userID).Scan(&balance, &withdrawn); err != nil {
+		return err
+	}
+
+	if balance < sum {
+		return ErrInsufficientFunds
+	}
+
+	if _, err := tx.ExecContext(ctx, insertWithdraw, orderNumber, userID, sum); err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
+func (storage *DBStorage) ListWithdrawals(ctx context.Context, userID uint64) ([]model.WithdrawalResponse, error) {
+	rows, err := storage.db.QueryContext(ctx, listWithdrawalsByUser, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var withdrawals []model.WithdrawalResponse
+
+	for rows.Next() {
+		var w model.WithdrawalResponse
+		if err := rows.Scan(&w.Order, &w.Sum, &w.ProcessedAt); err != nil {
+			return nil, err
+		}
+		withdrawals = append(withdrawals, w)
+	}
+
+	return withdrawals, rows.Err()
 }
 
 func (storage *DBStorage) OnServerShutdown() error {

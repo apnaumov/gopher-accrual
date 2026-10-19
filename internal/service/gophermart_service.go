@@ -188,6 +188,32 @@ func (gophermartService *GophermartService) UploadOrder(ctx context.Context, use
 	return nil
 }
 
+func (gophermartService *GophermartService) GetBalance(ctx context.Context, userID uint64) (model.BalanceResponse, error) {
+	balance, withdrawn, err := gophermartService.dbStorage.GetBalance(ctx, userID)
+
+	if err != nil {
+		return model.BalanceResponse{}, err
+	}
+
+	return model.BalanceResponse{Current: balance, Withdrawn: withdrawn}, nil
+}
+
+func (gophermartService *GophermartService) ListOrders(ctx context.Context, userID uint64) ([]model.OrderResponse, error) {
+	return gophermartService.dbStorage.ListOrders(ctx, userID)
+}
+
+func (gophermartService *GophermartService) Withdraw(ctx context.Context, userID uint64, request model.WithdrawRequest) error {
+	if !isValidLuhn(request.Order) || request.Sum <= 0 {
+		return ErrInvalidOrderNumber
+	}
+
+	return gophermartService.dbStorage.Withdraw(ctx, userID, request.Order, request.Sum)
+}
+
+func (gophermartService *GophermartService) ListWithdrawals(ctx context.Context, userID uint64) ([]model.WithdrawalResponse, error) {
+	return gophermartService.dbStorage.ListWithdrawals(ctx, userID)
+}
+
 // isValidLuhn проверяет, что строка состоит только из цифр и проходит проверку алгоритмом Луна
 func isValidLuhn(number string) bool {
 	if len(number) == 0 {
