@@ -212,9 +212,7 @@ func (router *GophermartRouter) listOrders(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if router.writeJSON(w, orders) {
-		w.WriteHeader(http.StatusOK)
-	} else {
+	if !router.writeJSON(w, orders) {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 	}
 }
@@ -238,9 +236,7 @@ func (router *GophermartRouter) getBalance(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if router.writeJSON(w, balanceResponce) {
-		w.WriteHeader(http.StatusOK)
-	} else {
+	if !router.writeJSON(w, balanceResponce) {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 	}
 }
@@ -302,9 +298,7 @@ func (router *GophermartRouter) listWithdrawals(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	if router.writeJSON(w, withdrawals) {
-		w.WriteHeader(http.StatusOK)
-	} else {
+	if !router.writeJSON(w, withdrawals) {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 	}
 }
