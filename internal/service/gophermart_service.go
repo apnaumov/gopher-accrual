@@ -73,19 +73,7 @@ func (gophermartService *GophermartService) processAccrualOrders(ctx context.Con
 
 	case http.StatusNoContent:
 		gophermartService.logger.Warn("Order doesn't registered in accrual system", zap.String("Order number", string(message)))
-		rowsAffected, err := gophermartService.dbStorage.UpdateOrder(reqCtx, model.AccrualResponse{Order: string(message), Status: "INVALID"})
-
-		if err != nil {
-			classification := classifier.Classify(err)
-			if classification == repository.NonRetriable {
-				return err
-			} else {
-				gophermartService.logger.Error(err.Error())
-				return ErrNeedToRetry
-			}
-		}
-
-		gophermartService.logger.Debug("Rows affected while status no content", zap.Int64("Rows affected", rowsAffected))
+		return ErrNeedToRetry
 
 	case http.StatusInternalServerError:
 		gophermartService.logger.Warn("Accrual internal server error, retry request later")
