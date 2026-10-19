@@ -14,31 +14,38 @@ var (
 	ErrProcessorStopped = errors.New("message processor is stopped")
 )
 
+type RetryableProviderData[T any] struct {
+	message        T
+	currentRetries uint64
+}
+
 type PendingMessageProcessor[T any] struct {
-	messageQueue      chan T
-	retryMessageQueue chan T
+	messageQueue      chan RetryableProviderData[T]
+	retryMessageQueue chan RetryableProviderData[T]
 	// taskFunc обязана завершаться при отмене переданного контекста
 	taskFunc       func(context.Context, T) error
 	ctx            context.Context
 	cancel         context.CancelFunc
 	workerPoolSize uint64
+	retryCount     uint64
 	insertSem      chan struct{}
 	logger         *zap.Logger
 	wg             sync.WaitGroup
 }
 
-func NewPendingMessageProcessor[T any](bufferSize uint64, workerPoolSize uint64, insertSemSize uint64,
+func NewPendingMessageProcessor[T any](bufferSize uint64, workerPoolSize uint64, insertSemSize uint64, retryCount uint64,
 	taskFunc func(ctx context.Context, message T) error, logger *zap.Logger) *PendingMessageProcessor[T] {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
 	return &PendingMessageProcessor[T]{
-		messageQueue:      make(chan T, bufferSize),
-		retryMessageQueue: make(chan T, bufferSize),
+		messageQueue:      make(chan RetryableProviderData[T], bufferSize),
+		retryMessageQueue: make(chan RetryableProviderData[T], bufferSize),
 		taskFunc:          taskFunc,
 		ctx:               ctx,
 		cancel:            cancel,
 		workerPoolSize:    workerPoolSize,
+		retryCount:        retryCount,
 		insertSem:         make(chan struct{}, insertSemSize),
 		logger:            logger,
 	}
@@ -64,8 +71,8 @@ func (processor *PendingMessageProcessor[T]) Run() {
 	}
 }
 
-func (processor *PendingMessageProcessor[T]) processMessage(message T) {
-	err := processor.taskFunc(processor.ctx, message)
+func (processor *PendingMessageProcessor[T]) processMessage(message RetryableProviderData[T]) {
+	err := processor.taskFunc(processor.ctx, message.message)
 	if err == nil {
 		return
 	}
@@ -76,6 +83,12 @@ func (processor *PendingMessageProcessor[T]) processMessage(message T) {
 	}
 
 	if errors.Is(err, ErrNeedToRetry) {
+		message.currentRetries++
+		if message.currentRetries > processor.retryCount {
+			processor.logger.Warn("Retry limit exceeded")
+			return
+		}
+
 		select {
 		case processor.retryMessageQueue <- message:
 			processor.logger.Debug("Message returned to queue")
@@ -88,7 +101,7 @@ func (processor *PendingMessageProcessor[T]) processMessage(message T) {
 
 // Забирает все доступные на данный момент сообщения из очереди повторов и обрабатывает их
 func (processor *PendingMessageProcessor[T]) retryProcessMessages() {
-	var messages []T
+	var messages []RetryableProviderData[T]
 
 collect:
 	for {
@@ -125,7 +138,7 @@ func (processor *PendingMessageProcessor[T]) InsertToQueue(message T) error {
 		defer func() { <-processor.insertSem }()
 
 		select {
-		case processor.messageQueue <- message:
+		case processor.messageQueue <- RetryableProviderData[T]{message: message}:
 		case <-processor.ctx.Done():
 		}
 	}()

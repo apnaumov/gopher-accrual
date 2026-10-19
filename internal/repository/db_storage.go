@@ -19,7 +19,7 @@ var (
 	ErrNotFound             = errors.New("can't find record")
 	ErrInsertCollision      = errors.New("collision while inserting record")
 	ErrInsufficientFunds    = errors.New("insufficient funds")
-	ErrStatusConvertInvalid =errors.New("can't convert order status name to status number")
+	ErrStatusConvertInvalid = errors.New("can't convert order status name to status number")
 )
 
 type DBStorage struct {
@@ -46,8 +46,8 @@ func NewDBStorage(connStr string, logger *zap.Logger) (*DBStorage, error) {
 	return dbStorage, nil
 }
 
-func (storage *DBStorage) CreateNewUser(ctx context.Context, login string, password_hash string) (uint64, error) {
-	row := storage.db.QueryRowContext(ctx, registerNewUser, login, password_hash)
+func (storage *DBStorage) CreateNewUser(ctx context.Context, login string, passwordHash string) (uint64, error) {
+	row := storage.db.QueryRowContext(ctx, registerNewUser, login, passwordHash)
 
 	var userID uint64
 

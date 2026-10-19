@@ -47,7 +47,7 @@ func NewGophermartService(accrualAddr string, messageProcessorConfig *config.Pen
 	}
 
 	pendingGetOrderProcessor := NewPendingMessageProcessor(messageProcessorConfig.BufferSize, messageProcessorConfig.WorkerPoolSize,
-		messageProcessorConfig.MaxParallelInsertsToQueue, gophermartService.processAccrualOrders, logger.Named("pending_message_processor"))
+		messageProcessorConfig.MaxParallelInsertsToQueue, messageProcessorConfig.MaxRetries, gophermartService.processAccrualOrders, logger.Named("pending_message_processor"))
 
 	gophermartService.pendingGetOrderProcessor = pendingGetOrderProcessor
 	gophermartService.pendingGetOrderProcessor.Run()

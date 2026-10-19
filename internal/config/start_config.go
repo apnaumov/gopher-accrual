@@ -12,6 +12,7 @@ type PendingMessageProcessorConfig struct {
 	BufferSize                uint64
 	WorkerPoolSize            uint64
 	MaxParallelInsertsToQueue uint64
+	MaxRetries                uint64
 }
 
 type Config struct {
@@ -57,6 +58,7 @@ func setConfigFromArgs(config *Config) {
 	flag.Uint64Var(&config.PendingMessageProcessorParams.BufferSize, "bufferSize", 1024, "Buffer size")
 	flag.Uint64Var(&config.PendingMessageProcessorParams.WorkerPoolSize, "workerPoolSize", 20, "Worker pool size")
 	flag.Uint64Var(&config.PendingMessageProcessorParams.MaxParallelInsertsToQueue, "maxParallelInsertsToQueue", 20, "Maximum parallel inserts to message queue")
+	flag.Uint64Var(&config.PendingMessageProcessorParams.MaxRetries, "maxRetriesToProcessMessage", 20, "Maximum retries to process message")
 	flag.Parse()
 
 	config.SecretKey = []byte(secretKey)
@@ -106,6 +108,15 @@ func setConfigFromEnv(config *Config) {
 		}
 		config.PendingMessageProcessorParams.MaxParallelInsertsToQueue = u64
 	}
+
+	if maxRetriesString, found := os.LookupEnv("GOPHERMART_MAX_RETRIES"); found {
+		u64, err := strconv.ParseUint(maxRetriesString, 10, 64)
+		if err != nil {
+			log.Fatal(err)
+		}
+		config.PendingMessageProcessorParams.MaxRetries = u64
+	}
+
 }
 
 func generateSecretKey(size int) ([]byte, error) {
