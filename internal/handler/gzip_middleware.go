@@ -3,6 +3,7 @@ package handler
 import (
 	"compress/gzip"
 	"io"
+	"mime"
 	"net/http"
 	"slices"
 	"strings"
@@ -12,6 +13,7 @@ type compressWriter struct {
 	http.ResponseWriter
 	zw             *gzip.Writer
 	needToCompress bool
+	wroteHeader    bool
 }
 
 func newCompressWriter(w http.ResponseWriter) *compressWriter {
@@ -23,6 +25,10 @@ func newCompressWriter(w http.ResponseWriter) *compressWriter {
 }
 
 func (c *compressWriter) Write(p []byte) (int, error) {
+	if !c.wroteHeader {
+		c.WriteHeader(http.StatusOK)
+	}
+
 	if c.needToCompress {
 		return c.zw.Write(p)
 	} else {
@@ -31,6 +37,11 @@ func (c *compressWriter) Write(p []byte) (int, error) {
 }
 
 func (c *compressWriter) WriteHeader(statusCode int) {
+	if c.wroteHeader {
+		return
+	}
+	c.wroteHeader = true
+
 	if statusCode < 300 && c.shouldCompress(c.Header().Get("Content-Type")) {
 		c.Header().Set("Content-Encoding", "gzip")
 		c.needToCompress = true
@@ -51,7 +62,12 @@ func (c *compressWriter) shouldCompress(contentType string) bool {
 		"text/html",
 	}
 
-	return slices.Contains(compressibleTypes, contentType)
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return false
+	}
+
+	return slices.Contains(compressibleTypes, mediaType)
 }
 
 type compressReader struct {
