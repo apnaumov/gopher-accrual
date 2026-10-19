@@ -27,13 +27,13 @@ var (
 )
 
 type GophermartService struct {
-	dbStorage                *repository.DBStorage
+	dbStorage                repository.Storage
 	accrualAddr              string
 	pendingGetOrderProcessor *PendingMessageProcessor[model.OrderNumber]
 	logger                   *zap.Logger
 }
 
-func NewGophermartService(accrualAddr string, messageProcessorConfig *config.PendingMessageProcessorConfig, dbStorage *repository.DBStorage) (*GophermartService, error) {
+func NewGophermartService(accrualAddr string, messageProcessorConfig *config.PendingMessageProcessorConfig, dbStorage repository.Storage) (*GophermartService, error) {
 	logger, err := logger.InitializeRootLogger("gophermart_service", "debug")
 
 	if err != nil {

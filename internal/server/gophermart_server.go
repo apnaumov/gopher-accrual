@@ -12,34 +12,26 @@ import (
 
 	"github.com/apnaumov/gopher-accrual.git/internal/config"
 	"github.com/apnaumov/gopher-accrual.git/internal/handler"
-	"github.com/apnaumov/gopher-accrual.git/internal/logger"
 	"github.com/apnaumov/gopher-accrual.git/internal/repository"
 	"go.uber.org/zap"
 )
 
-func StartGophermartServer() {
-	conf := config.InitConfig()
-	err := logger.SetLogDirectory(conf.LogDirectory)
-	if err != nil {
-		log.Fatal(err.Error())
-	}
-
-	logger, err := logger.InitializeRootLogger("server", "debug")
-	if err != nil {
-		log.Fatal(err.Error())
-	}
-	zap.RedirectStdLog(logger)
-
+func InitDBStorage(DBConnectionString string, logger *zap.Logger) *repository.DBStorage {
 	var storage *repository.DBStorage
 	logger.Info("Try to initialize storage")
-	if len(conf.DBConnectionString) != 0 {
-		st, err := repository.NewDBStorage(conf.DBConnectionString, logger.Named("storage"))
+	if len(DBConnectionString) != 0 {
+		st, err := repository.NewDBStorage(DBConnectionString, logger.Named("storage"))
 		if err != nil {
 			log.Fatal(err.Error())
 		}
 		logger.Info("Db storage initialized")
 		storage = st
 	}
+
+	return storage
+}
+
+func StartGophermartServer(conf config.Config, storage repository.Storage, logger *zap.Logger) {
 
 	router, err := handler.NewGophermartRouter(conf.AccrualSystemAddress, conf.SecretKey, &conf.PendingMessageProcessorParams, storage)
 	if err != nil {

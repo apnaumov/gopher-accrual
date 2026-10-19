@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/apnaumov/gopher-accrual.git/internal/model"
-	"github.com/apnaumov/gopher-accrual.git/internal/repository"
 	"github.com/golang-jwt/jwt/v4"
 )
 
@@ -60,13 +59,11 @@ func (router *GophermartRouter) authMiddleware(h http.Handler) http.Handler {
 }
 
 type jwtClient struct {
-	storage *repository.DBStorage
 	authKey []byte
 }
 
-func NewJWTClient(storage *repository.DBStorage, authKey []byte) *jwtClient {
+func NewJWTClient(authKey []byte) *jwtClient {
 	return &jwtClient{
-		storage: storage,
 		authKey: authKey,
 	}
 }

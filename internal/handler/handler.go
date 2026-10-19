@@ -27,7 +27,7 @@ type GophermartRouter struct {
 	requestLogger *zap.Logger
 }
 
-func NewGophermartRouter(accrualAddr string, authKey []byte, messageProcessorConfig *config.PendingMessageProcessorConfig, DBStorage *repository.DBStorage) (*GophermartRouter, error) {
+func NewGophermartRouter(accrualAddr string, authKey []byte, messageProcessorConfig *config.PendingMessageProcessorConfig, storage repository.Storage) (*GophermartRouter, error) {
 	gophermartRouter := &GophermartRouter{}
 	gophermartRouter.Mux = chi.NewRouter()
 
@@ -39,14 +39,14 @@ func NewGophermartRouter(accrualAddr string, authKey []byte, messageProcessorCon
 
 	gophermartRouter.requestLogger = requestLogger
 
-	gophermart, err := service.NewGophermartService(accrualAddr, messageProcessorConfig, DBStorage)
+	gophermart, err := service.NewGophermartService(accrualAddr, messageProcessorConfig, storage)
 
 	if err != nil {
 		return nil, err
 	}
 
 	gophermartRouter.service = gophermart
-	gophermartRouter.jwtClient = NewJWTClient(DBStorage, authKey)
+	gophermartRouter.jwtClient = NewJWTClient(authKey)
 
 	// common middleware
 	gophermartRouter.Mux.Use(gophermartRouter.getLoggerMiddleware)
