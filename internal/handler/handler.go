@@ -1,0 +1,335 @@
+package handler
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"mime"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/apnaumov/gopher-accrual.git/internal/config"
+	"github.com/apnaumov/gopher-accrual.git/internal/logger"
+	"github.com/apnaumov/gopher-accrual.git/internal/model"
+	"github.com/apnaumov/gopher-accrual.git/internal/repository"
+	"github.com/apnaumov/gopher-accrual.git/internal/service"
+	"github.com/go-chi/chi/v5"
+	"go.uber.org/zap"
+	"golang.org/x/crypto/bcrypt"
+)
+
+type GophermartRouter struct {
+	Mux           *chi.Mux
+	service       *service.GophermartService
+	jwtClient     *jwtClient
+	requestLogger *zap.Logger
+}
+
+func NewGophermartRouter(accrualAddr string, authKey []byte, messageProcessorConfig *config.PendingMessageProcessorConfig, storage repository.Storage) (*GophermartRouter, error) {
+	gophermartRouter := &GophermartRouter{}
+	gophermartRouter.Mux = chi.NewRouter()
+
+	requestLogger, err := logger.InitializeRootLogger("server_requests", "debug")
+
+	if err != nil {
+		return nil, err
+	}
+
+	gophermartRouter.requestLogger = requestLogger
+
+	gophermart, err := service.NewGophermartService(accrualAddr, messageProcessorConfig, storage)
+
+	if err != nil {
+		return nil, err
+	}
+
+	gophermartRouter.service = gophermart
+	gophermartRouter.jwtClient = NewJWTClient(authKey)
+
+	// common middleware
+	gophermartRouter.Mux.Use(gophermartRouter.getLoggerMiddleware)
+	gophermartRouter.Mux.Use(gophermartRouter.gzipMiddleware)
+
+	gophermartRouter.Mux.Route("/api/user", func(r chi.Router) {
+		r.Post("/register", gophermartRouter.registerUser)
+		r.Post("/login", gophermartRouter.loginUser)
+
+		r.Group(func(r chi.Router) {
+			r.Use(gophermartRouter.authMiddleware)
+			r.Post("/orders", gophermartRouter.uploadOrder)
+			r.Get("/orders", gophermartRouter.listOrders)
+			r.Get("/balance", gophermartRouter.getBalance)
+			r.Post("/balance/withdraw", gophermartRouter.withdraw)
+			r.Get("/withdrawals", gophermartRouter.listWithdrawals)
+		})
+	})
+
+	gophermartRouter.Mux.MethodNotAllowed(gophermartRouter.methodNotAllowed)
+
+	return gophermartRouter, nil
+}
+
+func (router *GophermartRouter) OnShutdown() {
+	if err := router.service.OnServerShutdown(); err != nil {
+		router.requestLogger.Warn("Error while save service's configuration on shutdown", zap.String("error", err.Error()))
+	} else {
+		router.requestLogger.Info("Service's configuration saved on shutdown")
+	}
+}
+
+func (router *GophermartRouter) methodNotAllowed(w http.ResponseWriter, r *http.Request) {
+	http.Error(w, "Method not allowed", http.StatusBadRequest)
+}
+
+func (router *GophermartRouter) registerUser(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+
+	var userCredentials model.UserCredentials
+
+	if !router.checkJSONRequest(w, r, &userCredentials) {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	userID, err := router.service.RegisterUser(ctx, userCredentials)
+
+	if err != nil {
+		if errors.Is(err, repository.ErrInsertCollision) {
+			http.Error(w, http.StatusText(http.StatusConflict), http.StatusConflict)
+			return
+		}
+		router.requestLogger.Error(err.Error())
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+
+	router.jwtClient.SetNewCookie(w, r, userID)
+	w.WriteHeader(http.StatusOK)
+}
+
+func (router *GophermartRouter) loginUser(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+
+	var userCredentials model.UserCredentials
+
+	if !router.checkJSONRequest(w, r, &userCredentials) {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	userID, err := router.service.LoginUser(ctx, userCredentials)
+
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) || errors.Is(err, bcrypt.ErrMismatchedHashAndPassword) {
+			http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+			return
+		}
+
+		router.requestLogger.Error(err.Error())
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+
+	router.jwtClient.SetNewCookie(w, r, userID)
+	w.WriteHeader(http.StatusOK)
+}
+
+func (router *GophermartRouter) uploadOrder(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || mediaType != "text/plain" {
+		http.Error(w, "Content-type incorrect", http.StatusBadRequest)
+		return
+	}
+
+	userID, err := getUserIDFromCtx(r.Context())
+	if err != nil {
+		router.requestLogger.Error(err.Error())
+		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+		return
+	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		router.requestLogger.Error(err.Error())
+		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+		return
+	}
+
+	orderNumber := strings.TrimSpace(string(body))
+	if len(orderNumber) == 0 {
+		http.Error(w, "Body must be not empty", http.StatusBadRequest)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	err = router.service.UploadOrder(ctx, userID, model.OrderNumber(orderNumber))
+
+	switch {
+	case err == nil:
+		w.WriteHeader(http.StatusAccepted)
+	case errors.Is(err, service.ErrOrderAlreadyUploaded):
+		w.WriteHeader(http.StatusOK)
+	case errors.Is(err, service.ErrOrderUploadedByAnotherUser):
+		http.Error(w, http.StatusText(http.StatusConflict), http.StatusConflict)
+	case errors.Is(err, service.ErrInvalidOrderNumber):
+		http.Error(w, http.StatusText(http.StatusUnprocessableEntity), http.StatusUnprocessableEntity)
+	default:
+		router.requestLogger.Error(err.Error())
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+	}
+}
+
+func (router *GophermartRouter) listOrders(w http.ResponseWriter, r *http.Request) {
+	userID, err := getUserIDFromCtx(r.Context())
+	if err != nil {
+		router.requestLogger.Error(err.Error())
+		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	orders, err := router.service.ListOrders(ctx, userID)
+	if err != nil {
+		router.requestLogger.Error(err.Error())
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+
+	if len(orders) == 0 {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	if !router.writeJSON(w, orders) {
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+	}
+}
+
+func (router *GophermartRouter) getBalance(w http.ResponseWriter, r *http.Request) {
+	userID, err := getUserIDFromCtx(r.Context())
+	if err != nil {
+		router.requestLogger.Error(err.Error())
+		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	balanceResponce, err := router.service.GetBalance(ctx, userID)
+
+	if err != nil {
+		router.requestLogger.Error(err.Error())
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+
+	if !router.writeJSON(w, balanceResponce) {
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+	}
+}
+
+func (router *GophermartRouter) withdraw(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+
+	userID, err := getUserIDFromCtx(r.Context())
+	if err != nil {
+		router.requestLogger.Error(err.Error())
+		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+		return
+	}
+
+	var request model.WithdrawRequest
+
+	if !router.checkJSONRequest(w, r, &request) {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	err = router.service.Withdraw(ctx, userID, request)
+
+	switch {
+	case err == nil:
+		w.WriteHeader(http.StatusOK)
+	case errors.Is(err, repository.ErrInsufficientFunds):
+		http.Error(w, http.StatusText(http.StatusPaymentRequired), http.StatusPaymentRequired)
+	case errors.Is(err, service.ErrInvalidOrderNumber):
+		http.Error(w, http.StatusText(http.StatusUnprocessableEntity), http.StatusUnprocessableEntity)
+	default:
+		router.requestLogger.Error(err.Error())
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+	}
+}
+
+func (router *GophermartRouter) listWithdrawals(w http.ResponseWriter, r *http.Request) {
+	userID, err := getUserIDFromCtx(r.Context())
+	if err != nil {
+		router.requestLogger.Error(err.Error())
+		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	withdrawals, err := router.service.ListWithdrawals(ctx, userID)
+	if err != nil {
+		router.requestLogger.Error(err.Error())
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+
+	if len(withdrawals) == 0 {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	if !router.writeJSON(w, withdrawals) {
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+	}
+}
+
+func (router *GophermartRouter) writeJSON(w http.ResponseWriter, v any) bool {
+	w.Header().Set("Content-Type", "application/json")
+
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		router.requestLogger.Error(err.Error())
+		return false
+	}
+
+	return true
+}
+
+func (router *GophermartRouter) checkJSONRequest(w http.ResponseWriter, r *http.Request, v any) bool {
+	if r.Header.Get("Content-Type") != "application/json" {
+		http.Error(w, "Content-type incorrect", http.StatusBadRequest)
+		return false
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
+		router.requestLogger.Error(err.Error())
+		if errors.Is(err, io.EOF) {
+			http.Error(w, "Body must be not empty", http.StatusBadRequest)
+		} else {
+			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		}
+
+		return false
+	}
+
+	return true
+}
