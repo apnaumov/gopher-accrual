@@ -145,3 +145,18 @@ func (processor *PendingMessageProcessor[T]) InsertToQueue(message T) error {
 
 	return nil
 }
+
+// Нужна для добавления сообщений до непосредственного запуска
+func (processor *PendingMessageProcessor[T]) PrestartInsertToQueue(messages []T) error {
+	go func() {
+		for i := range messages {
+			select {
+			case processor.messageQueue <- RetryableProviderData[T]{message: messages[i]}:
+			case <-processor.ctx.Done():
+			}
+		}
+
+	}()
+
+	return nil
+}

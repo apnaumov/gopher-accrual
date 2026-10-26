@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"errors"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -13,6 +12,7 @@ import (
 	"github.com/apnaumov/gopher-accrual.git/internal/config"
 	"github.com/apnaumov/gopher-accrual.git/internal/handler"
 	"github.com/apnaumov/gopher-accrual.git/internal/repository"
+	"github.com/apnaumov/gopher-accrual.git/internal/service"
 	"go.uber.org/zap"
 )
 
@@ -22,7 +22,7 @@ func InitDBStorage(DBConnectionString string, logger *zap.Logger) *repository.DB
 	if len(DBConnectionString) != 0 {
 		st, err := repository.NewDBStorage(DBConnectionString, logger.Named("storage"))
 		if err != nil {
-			log.Fatal(err.Error())
+			logger.Fatal(err.Error())
 		}
 		logger.Info("Db storage initialized")
 		storage = st
@@ -31,9 +31,9 @@ func InitDBStorage(DBConnectionString string, logger *zap.Logger) *repository.DB
 	return storage
 }
 
-func StartGophermartServer(conf config.Config, storage repository.Storage, logger *zap.Logger) {
+func StartGophermartServer(conf config.Config, storage service.Storage, logger *zap.Logger) {
 
-	router, err := handler.NewGophermartRouter(conf.AccrualSystemAddress, conf.SecretKey, &conf.PendingMessageProcessorParams, storage)
+	router, err := handler.NewGophermartRouter(conf.AccrualSystemAddress, conf.SecretKey, &conf.PendingMessageProcessorParams, storage, conf.LogDirectory, conf.LogLevel)
 	if err != nil {
 		logger.Fatal(err.Error())
 	}

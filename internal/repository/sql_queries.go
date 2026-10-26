@@ -15,7 +15,9 @@ const (
 	SELECT user_id, false FROM orders WHERE order_number = $1
 	LIMIT 1`
 	updateOrder           = "UPDATE orders SET status = $1, accrual = $2 WHERE order_number = $3"
-	getOrderOwner         = "SELECT user_id FROM orders WHERE order_number = $1"
+	// Заказы, по которым ещё не получен финальный статус (NEW, PROCESSING)
+	getUnendedOrders      = "SELECT order_number FROM orders WHERE status IN ($1, $2) ORDER BY uploaded_at, internal_id"
+	getOrderOwner         ="SELECT user_id FROM orders WHERE order_number = $1"
 	listOrdersByUser      = "SELECT order_number, status, accrual, uploaded_at FROM orders WHERE user_id = $1 ORDER BY uploaded_at DESC, internal_id DESC"
 	listWithdrawalsByUser = "SELECT order_number, sum, processed_at FROM withdrawals WHERE user_id = $1 ORDER BY processed_at DESC, internal_id DESC"
 	// Блокирует строку пользователя, чтобы параллельные списания не увели баланс в минус

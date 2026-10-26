@@ -33,13 +33,15 @@ func newTestRouter(t *testing.T) (*GophermartRouter, *mocks.MockStorage) {
 	t.Helper()
 
 	storage := mocks.NewMockStorage(gomock.NewController(t))
+	// конструктор сервиса загружает незавершённые заказы при старте
+	storage.EXPECT().GetUnendedOrders(gomock.Any()).Return(nil, nil)
 
 	router, err := NewGophermartRouter("", testAuthKey, &config.PendingMessageProcessorConfig{
 		BufferSize:                10,
 		WorkerPoolSize:            0,
 		MaxParallelInsertsToQueue: 10,
 		MaxRetries:                1,
-	}, storage)
+	}, storage, "", "debug")
 	require.NoError(t, err)
 
 	return router, storage
@@ -144,7 +146,7 @@ func TestRegisterUser(t *testing.T) {
 
 		rec := do(router, testRequest{method: http.MethodPost, path: "/api/user/register", body: `{"login":`, contentType: "application/json"})
 
-		assert.Equal(t, http.StatusInternalServerError, rec.Code)
+		assert.Equal(t, http.StatusBadRequest, rec.Code)
 	})
 }
 

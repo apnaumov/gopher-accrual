@@ -7,11 +7,13 @@ import (
 
 	gopheraccrual "github.com/apnaumov/gopher-accrual.git"
 	"github.com/apnaumov/gopher-accrual.git/internal/model"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"go.uber.org/zap"
 
 	"github.com/golang-migrate/migrate/v4"
-	"github.com/golang-migrate/migrate/v4/database/pgx/v5"
+	migratepgx "github.com/golang-migrate/migrate/v4/database/pgx/v5"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
 )
 
@@ -23,7 +25,7 @@ var (
 )
 
 type DBStorage struct {
-	db     *sql.DB
+	pool   *pgxpool.Pool
 	logger *zap.Logger
 }
 
@@ -33,13 +35,13 @@ func NewDBStorage(connStr string, logger *zap.Logger) (*DBStorage, error) {
 		return nil, err
 	}
 
-	db, err := sql.Open("pgx", connStr)
+	pool, err := pgxpool.New(context.Background(), connStr)
 	if err != nil {
 		return nil, err
 	}
 
 	dbStorage := &DBStorage{
-		db:     db,
+		pool:   pool,
 		logger: logger,
 	}
 
@@ -47,13 +49,13 @@ func NewDBStorage(connStr string, logger *zap.Logger) (*DBStorage, error) {
 }
 
 func (storage *DBStorage) CreateNewUser(ctx context.Context, login string, passwordHash string) (uint64, error) {
-	row := storage.db.QueryRowContext(ctx, registerNewUser, login, passwordHash)
+	row := storage.pool.QueryRow(ctx, registerNewUser, login, passwordHash)
 
 	var userID uint64
 
 	err := row.Scan(&userID)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return 0, ErrInsertCollision
 		}
 		return 0, err
@@ -63,14 +65,14 @@ func (storage *DBStorage) CreateNewUser(ctx context.Context, login string, passw
 }
 
 func (storage *DBStorage) GetUserInformation(ctx context.Context, login string) (uint64, string, error) {
-	row := storage.db.QueryRowContext(ctx, getUserInformationByLogin, login)
+	row := storage.pool.QueryRow(ctx, getUserInformationByLogin, login)
 
 	var userID uint64
 	var passwordHash string
 
 	err := row.Scan(&userID, &passwordHash)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return 0, "", ErrNotFound
 		}
 		return 0, "", err
@@ -82,7 +84,7 @@ func (storage *DBStorage) GetUserInformation(ctx context.Context, login string) 
 // CreateOrder сохраняет заказ, если он ещё не был загружен.
 // Возвращает id владельца заказа и признак того, что заказ был создан этим вызовом.
 func (storage *DBStorage) CreateOrder(ctx context.Context, orderNumber model.OrderNumber, userID uint64) (uint64, bool, error) {
-	row := storage.db.QueryRowContext(ctx, createOrder, orderNumber, userID, model.OrderStatusNew)
+	row := storage.pool.QueryRow(ctx, createOrder, orderNumber, userID, model.OrderStatusNew)
 
 	var ownerID uint64
 	var created bool
@@ -101,22 +103,16 @@ func (storage *DBStorage) UpdateOrder(ctx context.Context, accrualOrder model.Ac
 		return 0, ErrStatusConvertInvalid
 	}
 
-	res, err := storage.db.ExecContext(ctx, updateOrder, orderStatus, accrualOrder.Accrual, accrualOrder.Order)
-
+	tag, err := storage.pool.Exec(ctx, updateOrder, orderStatus, accrualOrder.Accrual, accrualOrder.Order)
 	if err != nil {
 		return 0, err
 	}
 
-	rowsAffected, err := res.RowsAffected()
-	if err != nil {
-		return 0, err
-	}
-
-	return rowsAffected, nil
+	return tag.RowsAffected(), nil
 }
 
 func (storage *DBStorage) GetBalance(ctx context.Context, userID uint64) (float64, float64, error) {
-	res := storage.db.QueryRowContext(ctx, getBalance, userID)
+	res := storage.pool.QueryRow(ctx, getBalance, userID)
 
 	var balance float64
 	var withdrawn float64
@@ -131,7 +127,7 @@ func (storage *DBStorage) GetBalance(ctx context.Context, userID uint64) (float6
 }
 
 func (storage *DBStorage) ListOrders(ctx context.Context, userID uint64) ([]model.OrderResponse, error) {
-	rows, err := storage.db.QueryContext(ctx, listOrdersByUser, userID)
+	rows, err := storage.pool.Query(ctx, listOrdersByUser, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -142,7 +138,7 @@ func (storage *DBStorage) ListOrders(ctx context.Context, userID uint64) ([]mode
 	for rows.Next() {
 		var order model.OrderResponse
 		var status model.OrderStatus
-		var accrual sql.NullFloat64
+		var accrual *float64
 
 		if err := rows.Scan(&order.Number, &status, &accrual, &order.UploadedAt); err != nil {
 			return nil, err
@@ -150,8 +146,8 @@ func (storage *DBStorage) ListOrders(ctx context.Context, userID uint64) ([]mode
 
 		order.Status = model.OrdersStatusToName[status]
 		// accrual отдаём только для обработанных заказов
-		if accrual.Valid && status == model.OrderStatusProcessed {
-			order.Accrual = &accrual.Float64
+		if accrual != nil && status == model.OrderStatusProcessed {
+			order.Accrual = accrual
 		}
 
 		orders = append(orders, order)
@@ -162,19 +158,19 @@ func (storage *DBStorage) ListOrders(ctx context.Context, userID uint64) ([]mode
 
 // Withdraw списывает баллы атомарно: проверка баланса и вставка выполняются под блокировкой строки пользователя
 func (storage *DBStorage) Withdraw(ctx context.Context, userID uint64, orderNumber string, sum float64) error {
-	tx, err := storage.db.BeginTx(ctx, nil)
+	tx, err := storage.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer tx.Rollback(ctx)
 
 	var lockedID uint64
-	if err := tx.QueryRowContext(ctx, lockUser, userID).Scan(&lockedID); err != nil {
+	if err := tx.QueryRow(ctx, lockUser, userID).Scan(&lockedID); err != nil {
 		return err
 	}
 
 	var balance, withdrawn float64
-	if err := tx.QueryRowContext(ctx, getBalance, userID).Scan(&balance, &withdrawn); err != nil {
+	if err := tx.QueryRow(ctx, getBalance, userID).Scan(&balance, &withdrawn); err != nil {
 		return err
 	}
 
@@ -182,15 +178,15 @@ func (storage *DBStorage) Withdraw(ctx context.Context, userID uint64, orderNumb
 		return ErrInsufficientFunds
 	}
 
-	if _, err := tx.ExecContext(ctx, insertWithdraw, orderNumber, userID, sum); err != nil {
+	if _, err := tx.Exec(ctx, insertWithdraw, orderNumber, userID, sum); err != nil {
 		return err
 	}
 
-	return tx.Commit()
+	return tx.Commit(ctx)
 }
 
 func (storage *DBStorage) ListWithdrawals(ctx context.Context, userID uint64) ([]model.WithdrawalResponse, error) {
-	rows, err := storage.db.QueryContext(ctx, listWithdrawalsByUser, userID)
+	rows, err := storage.pool.Query(ctx, listWithdrawalsByUser, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -209,8 +205,30 @@ func (storage *DBStorage) ListWithdrawals(ctx context.Context, userID uint64) ([
 	return withdrawals, rows.Err()
 }
 
+// GetUnendedOrders возвращает номера заказов в статусах NEW и PROCESSING
+func (storage *DBStorage) GetUnendedOrders(ctx context.Context) ([]model.OrderNumber, error) {
+	rows, err := storage.pool.Query(ctx, getUnendedOrders, model.OrderStatusNew, model.OrderStatusProcessing)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var orderNumbers []model.OrderNumber
+
+	for rows.Next() {
+		var orderNumber model.OrderNumber
+		if err := rows.Scan(&orderNumber); err != nil {
+			return nil, err
+		}
+		orderNumbers = append(orderNumbers, orderNumber)
+	}
+
+	return orderNumbers, rows.Err()
+}
+
 func (storage *DBStorage) OnServerShutdown() error {
-	return storage.db.Close()
+	storage.pool.Close()
+	return nil
 }
 
 func runMigrations(connStr string) error {
@@ -225,7 +243,7 @@ func runMigrations(connStr string) error {
 	}
 
 	// 2. Создаём database-драйвер из *sql.DB
-	dbDriver, err := pgx.WithInstance(db, &pgx.Config{})
+	dbDriver, err := migratepgx.WithInstance(db, &migratepgx.Config{})
 	if err != nil {
 		return err
 	}

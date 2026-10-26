@@ -27,11 +27,11 @@ type GophermartRouter struct {
 	requestLogger *zap.Logger
 }
 
-func NewGophermartRouter(accrualAddr string, authKey []byte, messageProcessorConfig *config.PendingMessageProcessorConfig, storage repository.Storage) (*GophermartRouter, error) {
+func NewGophermartRouter(accrualAddr string, authKey []byte, messageProcessorConfig *config.PendingMessageProcessorConfig, storage service.Storage, logDirectory string, logLevel string) (*GophermartRouter, error) {
 	gophermartRouter := &GophermartRouter{}
 	gophermartRouter.Mux = chi.NewRouter()
 
-	requestLogger, err := logger.InitializeRootLogger("server_requests", "debug")
+	requestLogger, err := logger.InitializeRootLogger("server_requests", logLevel, logDirectory)
 
 	if err != nil {
 		return nil, err
@@ -39,7 +39,7 @@ func NewGophermartRouter(accrualAddr string, authKey []byte, messageProcessorCon
 
 	gophermartRouter.requestLogger = requestLogger
 
-	gophermart, err := service.NewGophermartService(accrualAddr, messageProcessorConfig, storage)
+	gophermart, err := service.NewGophermartService(accrualAddr, messageProcessorConfig, storage, logDirectory, logLevel)
 
 	if err != nil {
 		return nil, err
@@ -315,7 +315,8 @@ func (router *GophermartRouter) writeJSON(w http.ResponseWriter, v any) bool {
 }
 
 func (router *GophermartRouter) checkJSONRequest(w http.ResponseWriter, r *http.Request, v any) bool {
-	if r.Header.Get("Content-Type") != "application/json" {
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
 		http.Error(w, "Content-type incorrect", http.StatusBadRequest)
 		return false
 	}
@@ -325,7 +326,7 @@ func (router *GophermartRouter) checkJSONRequest(w http.ResponseWriter, r *http.
 		if errors.Is(err, io.EOF) {
 			http.Error(w, "Body must be not empty", http.StatusBadRequest)
 		} else {
-			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
 		}
 
 		return false

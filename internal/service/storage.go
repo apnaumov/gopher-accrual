@@ -1,4 +1,4 @@
-package repository
+package service
 
 import (
 	"context"
@@ -15,5 +15,6 @@ type Storage interface {
 	ListOrders(ctx context.Context, userID uint64) ([]model.OrderResponse, error)
 	Withdraw(ctx context.Context, userID uint64, orderNumber string, sum float64) error
 	ListWithdrawals(ctx context.Context, userID uint64) ([]model.WithdrawalResponse, error)
+	GetUnendedOrders(ctx context.Context) ([]model.OrderNumber, error)
 	OnServerShutdown() error
 }

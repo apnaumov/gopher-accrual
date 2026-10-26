@@ -11,12 +11,8 @@ import (
 
 func main() {
 	conf := config.InitConfig()
-	err := logger.SetLogDirectory(conf.LogDirectory)
-	if err != nil {
-		log.Fatal(err.Error())
-	}
 
-	logger, err := logger.InitializeRootLogger("server", "debug")
+	logger, err := logger.InitializeRootLogger("server", conf.LogLevel, conf.LogDirectory)
 	if err != nil {
 		log.Fatal(err.Error())
 	}

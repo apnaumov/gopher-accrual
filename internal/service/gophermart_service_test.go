@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/golang/mock/gomock"
 	"github.com/jackc/pgerrcode"
@@ -31,13 +32,15 @@ func newTestService(t *testing.T, accrualAddr string) (*GophermartService, *mock
 
 	ctrl := gomock.NewController(t)
 	storage := mocks.NewMockStorage(ctrl)
+	// конструктор сервиса загружает незавершённые заказы при старте
+	storage.EXPECT().GetUnendedOrders(gomock.Any()).Return(nil, nil)
 
 	svc, err := NewGophermartService(accrualAddr, &config.PendingMessageProcessorConfig{
 		BufferSize:                10,
 		WorkerPoolSize:            0,
 		MaxParallelInsertsToQueue: 10,
 		MaxRetries:                1,
-	}, storage)
+	}, storage, "", "debug")
 	require.NoError(t, err)
 
 	t.Cleanup(svc.pendingGetOrderProcessor.Shutdown)
@@ -372,8 +375,13 @@ func TestProcessAccrualOrders(t *testing.T) {
 			w.WriteHeader(http.StatusTooManyRequests)
 		}))
 
-		err := svc.processAccrualOrders(ctx, order)
+		// без Retry-After пауза 30с, отмена контекста должна прервать ожидание
+		cancelCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+		defer cancel()
+
+		err := svc.processAccrualOrders(cancelCtx, order)
 		require.Error(t, err)
+		assert.ErrorIs(t, err, context.DeadlineExceeded)
 		assert.NotErrorIs(t, err, ErrNeedToRetry)
 	})
 

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/textproto"
 	"strconv"
+	"sync"
 	"time"
 
 	"fmt"
@@ -27,14 +28,17 @@ var (
 )
 
 type GophermartService struct {
-	dbStorage                repository.Storage
+	dbStorage                Storage
 	accrualAddr              string
 	pendingGetOrderProcessor *PendingMessageProcessor[model.OrderNumber]
 	logger                   *zap.Logger
+
+	pauseOrderProcessorUntilMtx sync.Mutex
+	pauseOrderProcessorUntil    time.Time
 }
 
-func NewGophermartService(accrualAddr string, messageProcessorConfig *config.PendingMessageProcessorConfig, dbStorage repository.Storage) (*GophermartService, error) {
-	logger, err := logger.InitializeRootLogger("gophermart_service", "debug")
+func NewGophermartService(accrualAddr string, messageProcessorConfig *config.PendingMessageProcessorConfig, dbStorage Storage, logDirectory string, logLevel string) (*GophermartService, error) {
+	logger, err := logger.InitializeRootLogger("gophermart_service", logLevel, logDirectory)
 
 	if err != nil {
 		return nil, err
@@ -50,12 +54,54 @@ func NewGophermartService(accrualAddr string, messageProcessorConfig *config.Pen
 		messageProcessorConfig.MaxParallelInsertsToQueue, messageProcessorConfig.MaxRetries, gophermartService.processAccrualOrders, logger.Named("pending_message_processor"))
 
 	gophermartService.pendingGetOrderProcessor = pendingGetOrderProcessor
+
+	// Добавляем в очередь незаверешенные заказы
+	orderNumbers, err := dbStorage.GetUnendedOrders(context.Background())
+	if err != nil {
+		logger.Error("Can't get uneded orders.", zap.Error(err))
+	}
+	gophermartService.pendingGetOrderProcessor.PrestartInsertToQueue(orderNumbers)
+
 	gophermartService.pendingGetOrderProcessor.Run()
 
 	return gophermartService, nil
 }
 
+func (gophermartService *GophermartService) extendPause(until time.Time) {
+	gophermartService.pauseOrderProcessorUntilMtx.Lock()
+	defer gophermartService.pauseOrderProcessorUntilMtx.Unlock()
+
+	if until.After(gophermartService.pauseOrderProcessorUntil) {
+		gophermartService.pauseOrderProcessorUntil = until
+	}
+}
+
+func (gophermartService *GophermartService) waitForPause(ctx context.Context) error {
+	for {
+		gophermartService.pauseOrderProcessorUntilMtx.Lock()
+		wait := time.Until(gophermartService.pauseOrderProcessorUntil)
+		gophermartService.pauseOrderProcessorUntilMtx.Unlock()
+
+		if wait <= 0 {
+			return ctx.Err()
+		}
+
+		timer := time.NewTimer(wait)
+		select {
+		case <-timer.C:
+			// пауза могла быть продлена другим воркером, поэтому проверяем заново
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		}
+	}
+}
+
 func (gophermartService *GophermartService) processAccrualOrders(ctx context.Context, message model.OrderNumber) error {
+	if err := gophermartService.waitForPause(ctx); err != nil {
+		return err
+	}
+
 	reqCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
@@ -73,10 +119,6 @@ func (gophermartService *GophermartService) processAccrualOrders(ctx context.Con
 
 	case http.StatusNoContent:
 		gophermartService.logger.Warn("Order doesn't registered in accrual system", zap.String("Order number", string(message)))
-		return ErrNeedToRetry
-
-	case http.StatusInternalServerError:
-		gophermartService.logger.Warn("Accrual internal server error, retry request later")
 		return ErrNeedToRetry
 
 	case http.StatusOK:
@@ -101,14 +143,24 @@ func (gophermartService *GophermartService) processAccrualOrders(ctx context.Con
 			return ErrNeedToRetry
 		}
 
-	// усыпляем целую горутину, так как все равно сервис не работает, нет смысла гонять следующие сообщения
+	// пауза общая для всех воркеров
 	case http.StatusTooManyRequests:
 		secondsToSleep, err := strconv.Atoi(resp.Header().Get(textproto.CanonicalMIMEHeaderKey("Retry-After")))
-		if err != nil {
-			return err
+		if err != nil || secondsToSleep < 0 {
+			gophermartService.logger.Warn("Can't parse time Retry-After header. Setting pause to 30 seconds")
+			secondsToSleep = 30
 		}
 
-		time.Sleep(time.Duration(secondsToSleep) * time.Second)
+		gophermartService.extendPause(time.Now().Add(time.Duration(secondsToSleep) * time.Second))
+
+		if err := gophermartService.waitForPause(ctx); err != nil {
+			return err
+		}
+		return ErrNeedToRetry
+	}
+
+	if resp.StatusCode() >= 500 {
+		gophermartService.logger.Warn("Accrual currently unavailable, retry request later", zap.Int("Response code", resp.StatusCode()))
 		return ErrNeedToRetry
 	}
 

@@ -21,6 +21,7 @@ type Config struct {
 	AccrualSystemAddress string
 
 	LogDirectory                  string
+	LogLevel                      string
 	SecretKey                     []byte
 	PendingMessageProcessorParams PendingMessageProcessorConfig
 }
@@ -28,8 +29,8 @@ type Config struct {
 func InitConfig() Config {
 	config := Config{}
 
-	setConfigFromArgs(&config)
 	setConfigFromEnv(&config)
+	setConfigFromArgs(&config)
 
 	if len(config.SecretKey) == 0 {
 		secretKey, err := generateSecretKey(32)
@@ -47,21 +48,39 @@ func setConfigFromArgs(config *Config) {
 	const defaultLogDirectory = ""
 	const defaultDBConnection = ""
 	const defaultAccrual = ""
-	secretKey := ""
+	secretKey := string(config.SecretKey)
 
-	flag.StringVar(&config.ServerListenAddr, "a", defaultListen, `Address to run server"`)
-	flag.StringVar(&config.DBConnectionString, "d", defaultDBConnection, `Database connection string`)
-	flag.StringVar(&config.AccrualSystemAddress, "r", defaultAccrual, `Address to connect to accrual system`)
-	flag.StringVar(&config.LogDirectory, "l", defaultLogDirectory, `Log directory. Default puts messages to stdout`)
+	// Значения, уже заданные (например, из окружения), используются как значения по умолчанию флагов,
+	// поэтому не перезаписываются, если флаг не указан.
+	flag.StringVar(&config.ServerListenAddr, "a", stringOrDefault(config.ServerListenAddr, defaultListen), `Address to run server"`)
+	flag.StringVar(&config.DBConnectionString, "d", stringOrDefault(config.DBConnectionString, defaultDBConnection), `Database connection string`)
+	flag.StringVar(&config.AccrualSystemAddress, "r", stringOrDefault(config.AccrualSystemAddress, defaultAccrual), `Address to connect to accrual system`)
+	flag.StringVar(&config.LogDirectory, "l", stringOrDefault(config.LogDirectory, defaultLogDirectory), `Log directory. Default puts messages to stdout`)
+	flag.StringVar(&config.LogLevel, "log_level", stringOrDefault(config.LogLevel, "debug"), `Log Level`)
 
-	flag.StringVar(&secretKey, "k", "", `Secret key string`)
-	flag.Uint64Var(&config.PendingMessageProcessorParams.BufferSize, "bufferSize", 1024, "Buffer size")
-	flag.Uint64Var(&config.PendingMessageProcessorParams.WorkerPoolSize, "workerPoolSize", 20, "Worker pool size")
-	flag.Uint64Var(&config.PendingMessageProcessorParams.MaxParallelInsertsToQueue, "maxParallelInsertsToQueue", 20, "Maximum parallel inserts to message queue")
-	flag.Uint64Var(&config.PendingMessageProcessorParams.MaxRetries, "maxRetriesToProcessMessage", 20, "Maximum retries to process message")
+	p := &config.PendingMessageProcessorParams
+	flag.StringVar(&secretKey, "k", secretKey, `Secret key string`)
+	flag.Uint64Var(&p.BufferSize, "bufferSize", uintOrDefault(p.BufferSize, 1024), "Buffer size")
+	flag.Uint64Var(&p.WorkerPoolSize, "workerPoolSize", uintOrDefault(p.WorkerPoolSize, 20), "Worker pool size")
+	flag.Uint64Var(&p.MaxParallelInsertsToQueue, "maxParallelInsertsToQueue", uintOrDefault(p.MaxParallelInsertsToQueue, 20), "Maximum parallel inserts to message queue")
+	flag.Uint64Var(&p.MaxRetries, "maxRetriesToProcessMessage", uintOrDefault(p.MaxRetries, 20), "Maximum retries to process message")
 	flag.Parse()
 
 	config.SecretKey = []byte(secretKey)
+}
+
+func stringOrDefault(current, def string) string {
+	if current != "" {
+		return current
+	}
+	return def
+}
+
+func uintOrDefault(current, def uint64) uint64 {
+	if current != 0 {
+		return current
+	}
+	return def
 }
 
 func setConfigFromEnv(config *Config) {
@@ -79,6 +98,10 @@ func setConfigFromEnv(config *Config) {
 
 	if logDirectory, found := os.LookupEnv("LOG_LOCATION_PATH"); found {
 		config.LogDirectory = logDirectory
+	}
+
+	if logLevel, found := os.LookupEnv("LOG_LEVEL"); found {
+		config.LogLevel = logLevel
 	}
 
 	if secretKeyString, found := os.LookupEnv("GOPHERMART_SECRET_KEY"); found {

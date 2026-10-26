@@ -26,7 +26,7 @@ func (router *GophermartRouter) authMiddleware(h http.Handler) http.Handler {
 		token, err := r.Cookie(authCookieKey)
 		var userID uint64
 		if err != nil {
-			authLogger.Error(err.Error())
+			authLogger.Debug(err.Error())
 
 			if errors.Is(err, http.ErrNoCookie) {
 				http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
@@ -39,7 +39,7 @@ func (router *GophermartRouter) authMiddleware(h http.Handler) http.Handler {
 			claims, err := router.jwtClient.ParseToken(token.Value)
 
 			if err != nil {
-				authLogger.Error(err.Error())
+				authLogger.Debug(err.Error())
 				http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
 				return
 			}
@@ -47,7 +47,7 @@ func (router *GophermartRouter) authMiddleware(h http.Handler) http.Handler {
 			userID = claims.UserID
 
 			if userID == 0 {
-				authLogger.Error("User id is empty")
+				authLogger.Debug("User id is empty")
 				http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
 				return
 			}
