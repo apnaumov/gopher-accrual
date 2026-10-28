@@ -147,7 +147,7 @@ func (processor *PendingMessageProcessor[T]) InsertToQueue(message T) error {
 }
 
 // Нужна для добавления сообщений до непосредственного запуска
-func (processor *PendingMessageProcessor[T]) PrestartInsertToQueue(messages []T) error {
+func (processor *PendingMessageProcessor[T]) PrestartInsertToQueue(messages []T) {
 	go func() {
 		for i := range messages {
 			select {
@@ -157,6 +157,4 @@ func (processor *PendingMessageProcessor[T]) PrestartInsertToQueue(messages []T)
 		}
 
 	}()
-
-	return nil
 }

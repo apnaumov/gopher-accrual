@@ -58,7 +58,7 @@ func NewGophermartService(accrualAddr string, messageProcessorConfig *config.Pen
 	// Добавляем в очередь незаверешенные заказы
 	orderNumbers, err := dbStorage.GetUnendedOrders(context.Background())
 	if err != nil {
-		logger.Error("Can't get uneded orders.", zap.Error(err))
+		return nil, fmt.Errorf("can't get start service because can't get unended orders. Error: %w", err)
 	}
 	gophermartService.pendingGetOrderProcessor.PrestartInsertToQueue(orderNumbers)
 
